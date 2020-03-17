@@ -1,0 +1,473 @@
+<!DOCTYPE html>  
+<html>  
+<head>  
+<meta name="viewport" content="initial-scale=1.0, user-scalable=no" />  
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />  
+<title>轨迹回放</title>  
+<style type="text/css">  
+    html{height:100%}  
+    body{height:100%;margin:0px;padding:0px}  
+    #controller{
+		position:absolute;
+		right:80px;  
+		top:40px;
+		min-height:100px; 
+		width: 500px;
+		border-radius: 5px;
+		z-index:100; 
+		background-color:#fff;
+		border: 1px solid #ebeef5;
+		box-shadow: 5px 5px 5px rgba(0,0,0,0.3);}  
+    #map{height:100vh}  
+	.el-range-editor.el-input__inner {
+		width:100% !important;
+	}
+	.el-radio{
+		margin-right: 10px !important;
+	}
+	.leftBox{
+		height: 32px;
+		line-height: 32px;
+	}
+	.rowBox{
+		margin-bottom:10px;
+	}
+</style>    
+<script src="https://cdn.jsdelivr.net/npm/vue/dist/vue.js"></script>
+<!-- 引入样式 -->
+<link rel="stylesheet" href="https://unpkg.com/element-ui/lib/theme-chalk/index.css">
+<!-- 引入组件库 -->
+<script src="https://unpkg.com/element-ui/lib/index.js"></script>
+<!-- axios -->
+<script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+
+<script type="text/javascript" src="https://api.map.baidu.com/api?v=3.0&ak=sak1zcgqe7VfBS6gjBZjQcupnZb1PZHf"></script>   
+</head>    
+     
+<body>
+	<div id="app">
+		<div id="controller">  
+			<div style="width:calc(100% - 30px);margin:10px 15px;">
+				<div class="rowBox">
+					<el-row>
+						<el-col :span="4">
+							<div class="leftBox">时间选择:</div>
+						</el-col>
+						<el-col :span="20">
+							<el-date-picker
+							  v-model="timeValue"
+							  type="datetimerange"
+							  size="small"
+							  range-separator="至"
+							  :default-time="['08:00:00', '20:00:00']"
+							  start-placeholder="开始日期"
+							  end-placeholder="结束日期">
+							</el-date-picker>
+						</el-col>
+					</el-row>
+				</div>
+				<div class="rowBox">
+					<el-row>
+						<el-col :span="4">
+							<div class="leftBox">播放速度:</div>
+						</el-col>
+						<el-col :span="20">
+							<el-select v-model="speed" size="small" placeholder="请选择速度">
+								<el-option
+								  v-for="item in speeds"
+								  :key="item.value"
+								  :label="item.label"
+								  :value="item.value">
+								</el-option>
+							</el-select>
+						</el-col>
+					</el-row>
+				</div>
+				<div class="rowBox">
+					<el-row>
+						<el-col :span="4">
+							<div class="leftBox">画面跟随:</div>
+						</el-col>
+						<el-col :span="20">
+							<el-radio v-model="followPoint" :label="false" border size="small">关闭</el-radio>
+							<el-radio v-model="followPoint" :label="true" border size="small">开启</el-radio>
+						</el-col>
+					</el-row>
+				</div>
+				<div class="rowBox" style="text-align:center;">
+					<el-row>
+						<el-button @click="handleGetPoints" type="primary">更新轨迹</el-button>
+						<el-button :disabled="startDisabled" @click="startMove" type="primary">播放</el-button>
+						<el-button :disabled="stopDisabled" @click="stopMove" type="primary">暂停</el-button>
+						<el-button @click="resetMove" type="primary">重置</el-button>
+					</el-row>
+				</div>
+			</div>
+		</div>  
+		<div id="map"></div>
+	</div>
+</body> 
+<script type="text/javascript">
+	new Vue({
+		el: '#app',
+		data: () => {
+			return {
+				token: '',
+				axs: null,
+				userInfo: {},
+				viewFlag: false,// 画面跟随移动标志
+				timeValue: '',	// 时间周期
+				speed: 20,		// 速度
+				speeds: [
+					{label: '1x', value: 200},
+					{label: '2x', value: 100},
+					{label: '3x', value: 50},
+					{label: '4x', value: 40},
+					{label: '5x', value: 30},
+					{label: '10x', value: 20},
+					{label: '20x', value: 10},
+					{label: '40x', value: 5},
+				],
+				map: null,		// 地图
+				point: null,
+				startDisabled: false,
+				stopDisabled: true,
+				marker: null,	// 移动点
+				index: 0,		// 当前移动位置
+				moveStatus: null, // 移动状态
+				route: null,	// 路径
+				followPoint: false, // 关闭画面跟随
+				points: [],
+				rot: 270,
+				localUrl: 'http://192.168.31.112:15011/UserVehicleGpsHw',
+				url: 'https://tykj.cszhx.top:30420',
+				type: false
+			}
+		},
+		mounted() {
+			const now = new Date;
+			this.timeValue = [this.formatDate(new Date(),'yyyy-MM-dd 08:00:00'), this.formatDate(new Date(),'yyyy-MM-dd hh:mm:ss')]
+			this.init();
+			this.handleGetPoints();
+		},
+		methods: {
+			handleGetPoints() {
+				const type = this.GetQueryValue('type');
+				if (type === '1.3' || type === '2.2') {
+					const clientKey = this.GetQueryValue('clientKey') // 14142982443
+					const beginTime = this.formatDate(this.timeValue[0],'yyyy-MM-dd hh:mm:ss');
+					const endTime = this.formatDate(this.timeValue[1],'yyyy-MM-dd hh:mm:ss');
+
+					const query = {
+						objId: clientKey,
+						startTime: beginTime,
+						endTime: endTime,
+						type: (parseInt(type) - 1) + ""
+					};
+
+					this.startDisabled = true;
+
+					// axios.post('http://192.168.31.112:15011/UserVehicleGpsLh', query)
+					axios.post(this.url + '/gmApi/UserVehicleGpsLh', query)
+							.then((res) => {
+								this.points = [];
+								this.index = 0;
+
+								res.data.Data.CarGpsPoints[0].GpsPoints.forEach(item => {
+									this.points.push([item.Lng, item.Lat])
+								})
+								this.initMap();
+								this.initRoute();
+								this.initMarker();
+								this.startDisabled = false;
+							})
+							.catch(() => {
+
+							})
+				} else {
+					const clientKey = this.GetQueryValue('clientKey') // 14142982443
+					const beginTime = this.formatDate(this.timeValue[0],'yyyy-MM-dd 08:00:00');
+					const endTime = this.formatDate(this.timeValue[1],'yyyy-MM-dd 20:00:00');
+					this.startDisabled = true;
+
+					const query = {
+						clientKey: clientKey,
+						beginTime: beginTime,
+						endTime: endTime
+					};
+
+					// axios.post(this.localUrl, query)
+					axios.post(this.url + '/gmApi/UserVehicleGpsHw', query)
+						.then((res) => {
+							this.points = [];
+							this.index = 0;
+
+							res.data.data.forEach(item => {
+								this.points.push([item.Lng, item.Lat])
+							})
+
+							this.initMap();
+							this.initRoute();
+							this.initMarker();
+							this.startDisabled = false;
+						})
+						.catch(() => {
+
+						})
+				}
+			},
+			GetQueryValue(queryName) {
+				const reg = new RegExp("(^|&)" + queryName + "=([^&]*)(&|$)", "i");
+				const r = window.location.search.substr(1).match(reg);
+				if ( r != null ){
+					return decodeURI(r[2]);
+				}else{
+					return null;
+				}
+			},
+			formatDate (v, format) {
+				format = format || 'yyyy-MM-dd hh:mm:ss';
+				if (!v) return '';
+				let d = v;
+
+				if (typeof v === 'string') {
+					if (v.indexOf('/Date(') > -1) d = new Date(parseInt(v.replace('/Date(', '').replace(')/', ''), 10));
+					else d = new Date(Date.parse(v.replace(/-/g, '/').replace('T', ' ').split('.')[0]))
+				}
+
+				const o = {
+					'M+': d.getMonth() + 1,
+					'd+': d.getDate(),
+					'h+': d.getHours(),
+					'm+': d.getMinutes(),
+					's+': d.getSeconds(),
+					'q+': Math.floor((d.getMonth() + 3) / 3),
+					'S': d.getMilliseconds()
+				};
+				if (/(y+)/.test(format)) {
+					format = format.replace(RegExp.$1, (d.getFullYear() + '').substr(4 - RegExp.$1.length))
+				}
+
+				for (const k in o) {
+					if (new RegExp('(' + k + ')').test(format)) {
+						format = format.replace(RegExp.$1, RegExp.$1.length === 1 ? o[k] : ('00' + o[k]).substr(('' + o[k]).length))
+					}
+				}
+
+				return format
+			},
+			// 初始化地图
+			initMap() {
+				this.map = new BMap.Map("map",{enableMapClick:false});
+				this.point = new BMap.Point((this.points[0][0] + this.points[this.points.length - 1][0]) / 2, (this.points[0][1] + this.points[this.points.length - 1][1]) / 2);
+				this.map.centerAndZoom(this.point, 17);
+				this.map.enableScrollWheelZoom(true);
+				this.map.addControl(new BMap.NavigationControl());  
+				this.map.addControl(new BMap.ScaleControl());  
+				this.map.addControl(new BMap.OverviewMapControl({isOpen: true}));
+				this.map.setMapStyleV2({styleId:'249106f6b437022c9b7e43cea682bd2f'});
+			},
+			init() {
+				this.map = new BMap.Map("map",{enableMapClick:false});
+				this.point = new BMap.Point(113.95375,22.75642);
+				this.map.centerAndZoom(this.point, 17);
+				this.map.enableScrollWheelZoom(true);
+				this.map.addControl(new BMap.NavigationControl());
+				this.map.addControl(new BMap.ScaleControl());
+				this.map.addControl(new BMap.OverviewMapControl({isOpen: true}));
+				this.map.setMapStyleV2({styleId:'249106f6b437022c9b7e43cea682bd2f'});
+			},
+			// 初始化路径
+			initRoute() {
+				let tmp = [];
+				this.points.forEach(item => {
+					tmp.push(new BMap.Point(item[0], item[1]));
+				});
+
+				/*const sy = new BMap.Symbol(BMap_Symbol_SHAPE_BACKWARD_OPEN_ARROW, {
+					scale: 0.6,//图标缩放大小
+					strokeColor:'#fff',//设置矢量图标的线填充颜色
+					strokeWeight: '2',//设置线宽
+				});
+				const icons = new BMap.IconSequence(sy, '50', '100');
+
+				this.route = new BMap.Polyline(tmp,{
+									icons:[icons],
+									strokeColor: "#235733",
+									strokeWeight: 8,
+									strokeOpacity: 1
+								});*/
+							
+				this.route = new BMap.Polyline(tmp,{
+									strokeColor: "#235733",
+									strokeWeight: 8,
+									strokeOpacity: 1
+								});
+
+				this.map.addOverlay(this.route);
+			},
+			//	初始化点
+			initMarker() {
+				let pointsTmp = [];
+				let dis = 0.00006;
+				for (let i = 0; i < this.points.length - 1; i++) {
+					const start = this.points[i];
+					const end = this.points[i+1];
+					const num = Math.sqrt((start[1] - end[1]) * (start[1] - end[1]) + (start[0] - end[0]) * (start[0] - end[0])) / dis;
+					pointsTmp = pointsTmp.concat(this.getRandomPoint(start, end, num));
+				}
+				pointsTmp =  pointsTmp.concat([this.points[this.points.length - 1]]);
+				this.points = pointsTmp;
+				const tmp = {
+					lng: this.points[0][0],
+					lat: this.points[0][1]
+				};
+				
+				const type = this.GetQueryValue('type'); 	// '1'是人员 '2'是车辆
+				// 此处修改标志图片
+				if (type === '2.1') {
+					this.marker = new BMap.Marker(tmp,{icon:new BMap.Icon("https://tykj.cszhx.top:8443/webroot/help/picture/gm_pic/hw_car.png",new BMap.Size(38,94))});
+					this.rot = 0;
+					this.type = true;
+				} else if (type === '2.2') {
+					this.marker = new BMap.Marker(tmp,{icon:new BMap.Icon("https://tykj.cszhx.top:8443/webroot/help/picture/gm_pic/lh_car.png",new BMap.Size(38,94))});
+					this.rot = 0;
+					this.type = true;
+				} else if (type === '1.1' || type === '1.2' || type === '1.3') {
+					this.marker = new BMap.Marker(tmp,{icon:new BMap.Icon("https://tykj.cszhx.top:8443/webroot/help/picture/ksh/run.gif",new BMap.Size(40,40))});
+					this.rot = 270;
+					this.type = false;
+				} else {
+					this.marker = new BMap.Marker(tmp);
+					this.rot = 180;
+					this.type = false;
+				}
+
+				this.map.addOverlay(this.marker); 
+			},
+			// 开始移动
+			startMove() {
+				this.startDisabled = true;
+				this.stopDisabled = false;
+				this.move();
+			},
+			// 移动 
+			move() {
+				if (this.index >= 0 && this.index < this.points.length) {
+					const tmp = new BMap.Point(this.points[this.index][0], this.points[this.index][1]);
+					this.marker.setPosition(tmp);
+
+					if (this.type) {
+						const ro = this.getRotationByPos(this.points[this.index],this.points[this.index+1], this.rot);
+
+						this.marker.setRotation(ro);
+					}
+
+					const bound = this.map.getBounds();
+
+					// 画面跟随
+					if (this.followPoint) {
+						if (this.index % (5000 / this.speed) === 0 || (bound.containsPoint(tmp) === false && this.viewFlag === false)){
+							this.map.panTo(tmp);
+							this.viewFlag = true;
+							setTimeout(() => {
+								this.viewFlag = false;
+							},2000)
+						}
+					}
+
+					this.moveStatus = setTimeout(() => {
+						this.index++;
+						this.move();
+					}, this.speed);
+				} else {
+					clearTimeout(this.moveStatus);
+					this.moveStatus = null;
+					this.index = 0;
+					this.startDisabled = false;
+					this.stopDisabled = true;
+				}
+				
+			},
+			// 停止移动
+			stopMove() {
+				this.startDisabled = false;
+				this.stopDisabled = true;
+				clearTimeout(this.moveStatus);
+			},
+			// 重置
+			resetMove() {
+				clearTimeout(this.moveStatus);
+				this.index = 0;
+				this.moveStatus = null;
+				this.startDisabled = false;
+				this.stopDisabled = true;
+				const tmp = new BMap.Point(this.points[0][0], this.points[0][1]);
+				this.marker.setPosition(tmp);
+				this.map.panTo(tmp);
+			},
+			// 创建随机点
+			getRandomPoint (start, end, num) {
+			  // k b分别是一元一次方程的斜率和0点Y值
+			  let k;
+			  let b;
+			  let points = [];
+			  // 斜率不为无穷
+			  if (start[0] !== end[0]) {
+				if (start[0] - end[0] !== 0) {
+				  k = (start[1] - end[1]) / (start[0] - end[0]);
+				  b = start[1] - k * start[0];
+				  // 需要处理斜率为0的情况
+				} else {
+				  k = 0;
+				  b = start[1];
+				}
+				let first = start[0];
+				let last = end[0];
+				// 均匀创建坐标点
+				for (let i = 0; i < num; i++) {
+				  let xy = [];
+				  xy[0] = first + i * (last - first) / num;
+				  xy[1] = xy[0] * k + b;
+				  points.push(xy);
+				}
+			  } else {
+				for (let i = 0; i < num; i++) {
+				  let xy = [];
+				  xy[0] = start[0];
+				  xy[1] = start[1] + i * (end[1] - start[1]) / num;
+				  points.push(xy);
+				}
+			  }
+			  return points;
+			},
+			// 获取旋转度数
+			getRotationByPos(curPos, targetPos, num = 0) {
+				if (targetPos === null || targetPos === undefined) {
+					return 0;
+				}
+				var deg = 0;
+				if (targetPos[1] != curPos[1]) {
+					var tan = (targetPos[0] - curPos[0]) / (targetPos[1] - curPos[1]),
+						atan = Math.atan(tan);
+						deg = atan * 360 / (2 * Math.PI);
+						if (targetPos[1] < curPos[1]) {
+							deg = -deg + 90 + 90;
+						} else {
+							deg = -deg;
+						}
+				  } else {
+					var disy = targetPos[0] - curPos[0];
+					var bias = 0;
+					if (disy > 0)
+						bias = -1
+					else
+						bias = 1
+						deg = -bias * 90;
+				  }
+				  return num - deg ;
+			}
+		}
+	})
+</script>   
+</html>

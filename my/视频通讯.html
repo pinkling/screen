@@ -1,0 +1,328 @@
+<!DOCTYPE html>  
+<html>  
+<head>  
+	<meta name="viewport" content="initial-scale=1.0, user-scalable=no" />
+	<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+
+	<title>视频通讯</title>
+
+	<script src="https://cdn.jsdelivr.net/npm/vue/dist/vue.js"></script>
+	<!-- 引入样式 -->
+	<link rel="stylesheet" href="https://unpkg.com/element-ui/lib/theme-chalk/index.css">
+	<!-- 引入组件库 -->
+	<script src="https://unpkg.com/element-ui/lib/index.js"></script>
+	<!-- axios -->
+	<script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+	<!--实时音视频-->
+	<script src="https://sqimg.qq.com/expert_qq/webrtc/3.1.0/WebRTCAPI.min.js"></script>
+
+	<style type="text/css">
+		html{height:100%}
+		body{height:100%;margin:0px;padding:0px}
+		.gridContanier div {
+			border: 1px #164856 dashed;
+		}
+	</style>
+</head>    
+     
+<body style="background-color: #368b5d">
+	<div id="app">
+		<div style="display: flex;
+					color:red;
+					width: 100vw;
+					height: 100vh;">
+			<div class="gridContanier"
+				 style="display: grid;
+  						grid-row-gap: 5px;
+  						grid-column-gap: 5px;
+  						width: calc(75vw - 20px);
+  						margin: 10px;
+						text-align: center;"
+				 :style="gridStyle">
+
+				<div v-for="(item, index) in users" :key="index">
+					<video :id="'remoteVideo' + item" style="max-width:100%;max-height:100%;" muted autoplay playsinline></video>
+				</div>
+
+				<div @click="tset">
+					<video id="localVideo" style="max-width:100%;max-height:100%;" muted autoplay playsinline></video>
+				</div>
+			</div>
+
+			<div style="width: 25vw;text-align: center;">
+				<el-button :disabled="startClickFlag" @click="handleStartVideo">开始</el-button>
+				<div><p style="color:#fff;">提示:{{this.msgs[this.msgs.length - 1]}}</p></div>
+			</div>
+		</div>
+
+	</div>
+</body> 
+<script type="text/javascript">
+	var vm = new Vue({
+		el: '#app',
+		data: {
+			token: '',
+			axs: null,
+			appid: '',
+			userSig: '',
+			msgs: [],
+			supportFlag: false,	// 是否支持视频
+			devices: [], // 设备数
+			roomId: null,
+			RTC: null,
+			startClickFlag: true,
+			users: ['test','2','22']
+		},
+		watch: {
+
+		},
+		computed: {
+			gridStyle() {
+				const len = this.users.length + 1;
+				const va = Math.floor(Math.sqrt(len));
+				const vb = Math.ceil(len / va);
+				return {
+					"grid-template-columns": "repeat(" + vb + ", 1fr)",
+					"grid-template-rows": "repeat(" + va + ", 1fr)"
+				}
+			}
+		},
+		mounted() {
+			this.roomId = this.getRandomRoomId();
+			this.handleGetToken();
+			this.initAxs();
+			this.testRTC();
+			this.checkDevices();
+		},
+		methods: {
+			tset() {
+				console.log(this.roomId,this.msgs)
+			},
+			handleStartVideo() {
+				const opts = {
+					userId: '决策管理员',
+					sdkAppId: parseInt(this.appId),
+					userSig: this.userSig
+				};
+			// 验证配置
+				if (this.appId === '' || this.userSig === '' || this.roomId === null) {
+					console.log(opts, this.roomId);
+					this.$message({message: '配置错误或正在加载中, 请稍后重试', type: 'warning'});
+					return ;
+				}
+				if (this.supportFlag === false) {
+					this.$message({message: '设备暂不支持视频通话', type: 'warning'});
+					return ;
+				}
+			// 开始
+
+				// 初始化RTC
+				this.initRTC(opts);
+				// 延迟执行
+				setTimeout(() => {
+					if (this.devices.length > 0) {
+						this.getLocalStream(this.roomId)
+					} else {
+						this.enterRoom(this.roomId, false)
+					}
+
+					this.streamUpdate()
+					this.streamRemove()
+					this.kickOut()
+					this.localStream()
+				}, 2000)
+
+			},
+			// 检测是否支持实时视频
+			testRTC() {
+				WebRTCAPI.fn.detectRTC({
+					screenshare: false
+				}, info => {
+					if (info.support) {
+						this.supportFlag = true;
+					} else {
+						this.supportFlag = false;
+					}
+				})
+			},
+			// 检测设备数量
+			checkDevices() {
+				WebRTCAPI.fn.getVideoDevices(ret => {
+					this.devices = ret;
+				})
+			},
+			// 获取token
+			handleGetToken() {
+				axios.get('https://tykj.cszhx.top:30420/oauth/token?username=admin&password=lBTqrKS0kZixOFXeZ0HRng%3D%3D&grant_type=password&client_id=CD3B23BDBC304D7CBD0DD7D5737D337A&client_secret=lBTqrKS0kZixOFXeZ0HRng%3D%3D&scope=app&auth_type=account&is_encrypt=true')
+					.then((res) => {
+						this.token = res.data.access_token;
+
+						this.axs = axios.create({
+							baseURL: 'https://tykj.cszhx.top:30420',
+							timeout: 30000,
+							headers: {'Content-Type':'application/json'}
+						});
+
+						this.axs.defaults.headers.common['Authorization'] = 'Bearer ' + this.token;
+					})
+					.catch((err) => {
+						console.log(err);
+					})
+			},
+			// 初始化页面调用 最多十次
+			initAxs(cnt = 0) {
+				if (cnt <= 10) {
+					if (this.axs === null) {
+						setTimeout(() => {
+							this.initAxs(cnt++);
+						}, 2000)
+					} else {
+						this.handleGetAppId();
+					}
+				} else {
+					this.$message({message: '页面异常', type: 'error'});
+				}
+			},
+			// 获取appid
+			handleGetAppId() {
+				this.axs.get('/publicsApi/digital/publics/cloudVideo/getSdkAppId')
+					.then((res) => {
+						this.appId = res.data.data;
+						this.handleGetUserSig();
+					})
+					.catch((err) => {
+						console.log(err);
+					})
+			},
+			// 获取密钥
+			handleGetUserSig() {
+				const query = {
+					sdkAppId: parseInt(this.appId),
+					userId: '决策管理员'
+				};
+				this.axs.post('/publicsApi/digital/publics/cloudVideo/getUserSig', query)
+					.then((res) => {
+						this.userSig = res.data.data;
+						this.startClickFlag = false
+					})
+					.catch((err) => {
+						console.log(err);
+					})
+			},
+			// 获取随机房间号
+			getRandomRoomId() {
+				return Math.floor(Math.random() * 1000000);
+			},
+			// 初始化RTC
+			initRTC(opts) {
+				this.RTC = new WebRTCAPI(opts)
+			},
+			// 获取本地流
+			getLocalStream(roomid) {
+				this.RTC.getLocalStream({
+					video: true, // 是否采集视频，默认true
+					audio: true, // 是否采集音频，默认true
+					attributes: { // 推流相关配置的属性
+						width: 640, // 分辨率宽度
+						height: 480, // 分辨率高度
+						frameRate: 20 // 帧率
+					}
+				}, info => {
+					this.stream = info.stream
+					document.getElementById('localVideo').srcObject = this.stream
+
+					this.enterRoom(roomid)
+				}, error => {
+					console.error(error)
+				})
+			},
+			// 进入房间
+			enterRoom(roomid, flag = true) {
+				this.RTC.enterRoom({
+					roomid: roomid,
+					role: 'ed640'
+				}, () => {
+					this.msgs.push('进入房间成功')
+					if (flag) {
+						this.startRTC()
+					}
+				}, () => {
+					this.msgs.push('进入房间失败')
+				})
+			},
+			// 推流
+			startRTC() {
+				this.RTC.startRTC({
+					role: 'ed640', // 画面设定的配置集名称(见控制台-画面设定)
+					stream: this.stream // 通过采集本地音视频流获取到的本地流对象
+				}, () => {
+					this.msgs.push('开始推送')
+				}, () => {
+					this.msgs.push('推送失败')
+				})
+			},
+			// 停止推流
+			stopRTC() {
+				if (this.RTC !== null) {
+					this.RTC.stopRTC(0, () => {
+						this.msgs.push('已结束推送')
+					}, () => {
+						this.msgs.push('结束推送失败')
+					})
+				} else {
+					this.msgs.push('无推送')
+				}
+			},
+			// 监听远端流
+			streamUpdate() {
+				this.RTC.on('onRemoteStreamUpdate', data => {
+					if (data && data.stream) {
+						const stream = data.stream
+						document.querySelector('#remoteVideo' + data.userId).srcObject = stream // 通过 <video> 显示远端视频画面
+						this.msgs.push('远端视频获取成功')
+					} else {
+						this.msgs.push(data.userId + '进入了房间, 但无视频获取')
+					}
+				})
+			},
+			// 断开链接
+			streamRemove() {
+				this.RTC.on('onRemoteStreamRemove', info => {
+					this.msgs.push(info.userId + ' 断开了连接')
+					document.querySelector('#remoteVideo' + info.userId).srcObject = null
+				})
+			},
+			// 重复登录 踢出
+			kickOut() {
+				this.RTC.on('onKickout', info => {
+					this.msgs.push(info.userId + ' 重复登录，已被踢出')
+					document.querySelector('#localVideo').srcObject = null
+				})
+			},
+			// 本地流
+			localStream() {
+				this.RTC.on('onLocalStreamAdd', data => {
+					if (data && data.stream) {
+						document.querySelector('#localVideo').srcObject = data.stream
+						this.msgs.push('本地推流成功')
+						this.stream = data.stream
+						this.startRTC()
+					}
+				})
+			},
+			// 退出房间
+			quitRoom() {
+				if (this.RTC !== null) {
+					this.RTC.quit(() => {
+						this.msgs.push('退出成功')
+					}, () => {
+						this.msgs.push('退出失败')
+					})
+				} else {
+					this.msgs.push('已结束通讯')
+				}
+			}
+		}
+	})
+</script>   
+</html>
